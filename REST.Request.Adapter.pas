@@ -8,7 +8,6 @@ uses
   Data.DB,
   Data.Bind.Components,
   REST.Client,
-  System.Generics.Collections,
   REST.Exception;
 
 type
@@ -17,32 +16,38 @@ type
 
   TDataSetRESTRequestAdapter=class(TComponent)
   private
+    FAutoCreateTargetParam: Boolean;
     FDataSet: TDataSet;
+    FOnFilterRecord: TDataSetAdapterFilterRecordEvent;
     FRequest: TCustomRESTRequest;
     FRecordsMode: TDataSetAdapterRecordsMode;
-    FTargetParamName: string;
-    FOnFilterRecord: TDataSetAdapterFilterRecordEvent;
     FSingleObjectAsArray: Boolean;
+    FTargetParamName: string;
+    function GetJSONData: TJSONValue;
     procedure SetDataSet(const Value: TDataSet);
     procedure SetRequest(const Value: TCustomRESTRequest);
-    function GetJSONData: TJSONValue;
   protected
+    function GetJSONDataAcceptFilter: TJSONValue; virtual;
     function GetJSONDataAllRecords: TJSONValue; virtual;
     function GetJSONDataCurrentRecord: TJSONValue; virtual;
-    function GetJSONDataAcceptFilter: TJSONValue; virtual;
+    function GetTargetParam: TRESTRequestParameter; virtual;
     procedure Notification(AComponent: TComponent; Operation: TOperation); override;
 
-
+    // properties
     property JSONData: TJSONValue read GetJSONData;
   public
-    procedure UpdateRequest; virtual;
     constructor Create(AOwner: TComponent); override;
+    procedure UpdateRequest; virtual;
+    procedure UpdateRequestAndExecute;
   published
+    property AutoCreateTargetParam: Boolean read FAutoCreateTargetParam write FAutoCreateTargetParam default true;
     property DataSet: TDataSet read FDataSet write SetDataSet;
-    property Request: TCustomRESTRequest read FRequest write SetRequest;
     property RecordsMode: TDataSetAdapterRecordsMode read FRecordsMode write FRecordsMode;
+    property Request: TCustomRESTRequest read FRequest write SetRequest;
+    property SingleObjectAsArray: Boolean read FSingleObjectAsArray write FSingleObjectAsArray default false;
     property TargetParamName: string read FTargetParamName write FTargetParamName;
-    property SingleObjectAsArray: Boolean read FSingleObjectAsArray write FSingleObjectAsArray;
+
+    // events
     property OnFilterRecord: TDataSetAdapterFilterRecordEvent read FOnFilterRecord write FOnFilterRecord;
   end;
 
@@ -50,6 +55,10 @@ type
   function DataSetToJSONArray(const ADataSet: TDataSet; const AAcceptFunc: TFunc<Boolean> = nil): TJSONArray;
 
 implementation
+
+uses
+  System.Generics.Collections,
+  REST.Types;
 
 type
   TJSONFieldType = (NestedObject, NestedArray, SimpleValue);
@@ -130,12 +139,36 @@ end;
 
 { TRESTDataSetRequestAdapter }
 
+function TDataSetRESTRequestAdapter.GetTargetParam: TRESTRequestParameter;
+begin
+  Assert(Assigned(Request));
+
+  Result := Request.Params.ParameterByName(TargetParamName);
+  if not Assigned(Result) then
+  begin
+    if not AutoCreateTargetParam then
+      raise Exception.CreateFmt('Target parameter not found: %s', [TargetParamName]);
+
+    // create param
+    Result := Request.Params.AddItem;
+    try
+      Result.Kind := TRESTRequestParameterKind.pkREQUESTBODY;
+      Result.name := TargetParamName;
+      Result.ContentType := TRESTContentType.ctAPPLICATION_JSON;
+    except
+      Result.Free;
+      raise;
+    end;
+  end;
+end;
+
 constructor TDataSetRESTRequestAdapter.Create(AOwner: TComponent);
 begin
   inherited;
+  FAutoCreateTargetParam := True;
+  FRecordsMode := TDataSetAdapterRecordsMode.CurrentRecord;
   FSingleObjectAsArray := False;
   FTargetParamName := 'body';
-  FRecordsMode := TDataSetAdapterRecordsMode.CurrentRecord;
 end;
 
 function TDataSetRESTRequestAdapter.GetJSONData: TJSONValue;
@@ -210,9 +243,9 @@ var
 begin
   Assert(Assigned(Request));
 
-  LParam := Request.Params.ParameterByName(TargetParamName);
-  if not Assigned(LParam) then
-    raise Exception.CreateFmt('Target parameter not found: %s', [TargetParamName]);
+  LParam := GetTargetParam;
+  Assert(Assigned(LParam));
+
   LJSONValue := JSONData;
   if Assigned(LJSONValue) then
     LParam.Value := JSONData.ToString
@@ -220,5 +253,11 @@ begin
     LParam.Value := '';
 end;
 
+
+procedure TDataSetRESTRequestAdapter.UpdateRequestAndExecute;
+begin
+  UpdateRequest;
+  Request.Execute;
+end;
 
 end.
